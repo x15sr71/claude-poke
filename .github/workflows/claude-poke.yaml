@@ -1,0 +1,95 @@
+name: Claude Poke
+
+on:
+  workflow_dispatch:
+  schedule:
+  - cron: '*/30 * * * *'
+
+jobs:
+  ping-claude:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Debug Claude environment
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Runner OS: $(uname -a)"
+          echo "Node: $(node --version || echo 'node missing')"
+          echo "Claude binary path: $(command -v claude || echo 'not found')"
+          echo "Claude version:"
+          claude --version || true
+          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            echo "Secret is missing"
+            exit 1
+          fi
+          echo "Secret present length: ${#CLAUDE_CODE_OAUTH_TOKEN}"
+
+      - name: Write minimal Claude config
+        run: |
+          cat > ~/.claude.json <<'EOF'
+          {"hasCompletedOnboarding": true}
+          EOF
+
+      - name: Run Claude ping
+        id: claude_ping
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set +e
+          mkdir -p logs
+
+          RUN_TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          MODEL="claude-haiku-4-5"
+
+          echo "run_time_utc=$RUN_TIME" >> "$GITHUB_OUTPUT"
+          echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+
+          claude -p "." \
+            --model "$MODEL" \
+            --permission-mode bypassPermissions \
+            > logs/claude-stdout.txt 2> logs/claude-stderr.txt
+          CLAUDE_EXIT=$?
+
+          echo "Claude exit code: $CLAUDE_EXIT"
+          echo "=== STDERR ==="
+          cat logs/claude-stderr.txt || true
+          echo "=== STDOUT ==="
+          cat logs/claude-stdout.txt || true
+
+          RESPONSE_TEXT="$(cat logs/claude-stdout.txt 2>/dev/null || true)"
+
+          {
+            echo "## Claude ping result"
+            echo "- Run time (UTC): $RUN_TIME"
+            echo "- Model: $MODEL"
+            echo "- Exit code: $CLAUDE_EXIT"
+            echo "- Prompt: \`.\`"
+            echo "- Response:"
+            echo '```'
+            echo "${RESPONSE_TEXT:-<empty response>}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit $CLAUDE_EXIT
+
+      - name: Upload logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-ping-logs
+          path: |
+            logs/claude-stdout.txt
+            logs/claude-stderr.txt
